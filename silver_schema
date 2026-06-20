@@ -1,0 +1,84 @@
+CREATE OR ALTER PROCEDURE silver.load_silver AS
+BEGIN
+    SET NOCOUNT ON;
+    
+    BEGIN TRY
+        PRINT '==================================================';
+        PRINT 'Starting Silver Layer Load (Handling Missing as lowercase n/a)';
+        PRINT '==================================================';
+
+        -- ====================================================================
+        -- 1. Load silver.crm_cust_info
+        -- ====================================================================
+        PRINT '>> Truncating and loading: silver.crm_cust_info';
+        TRUNCATE TABLE silver.crm_cust_info;
+        
+        INSERT INTO silver.crm_cust_info (
+            cst_id, cst_key, cst_firstname, cst_lastname, 
+            cst_marital_status, cst_gndr, cst_create_date
+        )
+        SELECT 
+            cst_id,
+            cst_key,
+            -- If blank or NULL, default to lowercase 'n/a'
+            CASE WHEN ISNULL(TRIM(cst_firstname), '') = '' THEN 'n/a' ELSE TRIM(cst_firstname) END AS cst_firstname,
+            CASE WHEN ISNULL(TRIM(cst_lastname), '') = '' THEN 'n/a' ELSE TRIM(cst_lastname) END AS cst_lastname,
+            CASE 
+                WHEN UPPER(TRIM(cst_marital_status)) IN ('M', 'MARRIED') THEN 'Married'
+                WHEN UPPER(TRIM(cst_marital_status)) IN ('S', 'SINGLE') THEN 'Single'
+                ELSE 'n/a' 
+            END AS cst_marital_status,
+            CASE 
+                WHEN UPPER(TRIM(cst_gndr)) IN ('F', 'FEMALE') THEN 'Female'
+                WHEN UPPER(TRIM(cst_gndr)) IN ('M', 'MALE') THEN 'Male'
+                ELSE 'n/a' 
+            END AS cst_gndr,
+            CAST(cst_create_date AS DATE) AS cst_create_date
+        FROM bronze.crm_cust_info;
+
+        -- ====================================================================
+        -- 2. Load silver.erp_cust_az12
+        -- ====================================================================
+        PRINT '>> Truncating and loading: silver.erp_cust_az12';
+        TRUNCATE TABLE silver.erp_cust_az12;
+        
+        INSERT INTO silver.erp_cust_az12 (cid, bdate, gen)
+        SELECT 
+            cid,
+            CASE 
+                WHEN bdate > GETDATE() THEN NULL 
+                ELSE CAST(bdate AS DATE) 
+            END AS bdate,
+            CASE 
+                WHEN UPPER(TRIM(gen)) IN ('F', 'FEMALE') THEN 'Female'
+                WHEN UPPER(TRIM(gen)) IN ('M', 'MALE') THEN 'Male'
+                ELSE 'n/a' 
+            END AS gen
+        FROM bronze.erp_cust_az12;
+
+        -- ====================================================================
+        -- 3. Load silver.erp_loc_a101
+        -- ====================================================================
+        PRINT '>> Truncating and loading: silver.erp_loc_a101';
+        TRUNCATE TABLE silver.erp_loc_a101;
+        
+        INSERT INTO silver.erp_loc_a101 (cid, cntry)
+        SELECT 
+            cid,
+            -- If country is blank or NULL, default to lowercase 'n/a'
+            CASE 
+                WHEN ISNULL(TRIM(cntry), '') = '' THEN 'n/a'
+                ELSE UPPER(TRIM(cntry)) -- Keeps country codes like 'USA' uppercase, but missing values as 'n/a'
+            END AS cntry
+        FROM bronze.erp_loc_a101;
+
+        PRINT '==================================================';
+        PRINT 'Silver Layer Load Successful!';
+        PRINT '==================================================';
+
+    END TRY
+    BEGIN CATCH
+        PRINT 'ERROR OCCURRED: ' + ERROR_MESSAGE();
+    END CATCH
+END;
+GO
