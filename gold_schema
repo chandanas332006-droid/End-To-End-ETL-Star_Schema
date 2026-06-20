@@ -1,0 +1,142 @@
+CREATE OR ALTER PROCEDURE gold.load_gold AS
+BEGIN
+    SET NOCOUNT ON;
+    
+    /*
+    ===================================================================================
+    PIPELINE DESCRIPTION:
+    This stored procedure orchestrates the final Gold Layer Dimensional Star Schema:
+    
+    1. REFRESH TARGETS: Truncates historical dimensional data.
+    2. SURROGATE KEYING & ALIASING:
+       - 'gold.dim_customers': Generates a clean auto-increment surrogate key (via identity configuration 
+                               or continuous row indexing) using the primary 'cst_key' link.
+       - 'gold.dim_products': Builds a surrogate dimension key mapping 'prd_key' to raw categories.
+       - 'gold.fact_sales': Subsumes raw alphanumeric keys by JOINING the new dimensions 
+                            to fetch the generated surrogate integer keys.
+    ===================================================================================
+    */
+
+    DECLARE @start_time DATETIME, @end_time DATETIME;
+    DECLARE @batch_start DATETIME, @batch_end DATETIME;
+    
+    BEGIN TRY
+        SET @batch_start = GETDATE();
+        PRINT '==================================================';
+        PRINT 'Starting Master Gold Layer Dimensional Pipeline';
+        PRINT '==================================================';
+
+        -- ====================================================================
+        -- 1. Load gold.dim_customers (Using Real Columns & Aliases)
+        -- ====================================================================
+        SET @start_time = GETDATE();
+        PRINT '>> Truncating and loading: gold.dim_customers';
+        TRUNCATE TABLE gold.dim_customers;
+        
+        INSERT INTO gold.dim_customers (
+            customer_key, cst_id, cst_key, cst_firstname, cst_lastname, 
+            cst_marital_status, cst_gndr, cntry, bdate, cst_create_date
+        )
+        SELECT 
+            -- Generating a dynamic integer Surrogate Key
+            ROW_NUMBER() OVER (ORDER BY ci.cst_key) AS customer_key, 
+            ci.cst_id,
+            ci.cst_key,
+            ci.cst_firstname,
+            ci.cst_lastname,
+            ci.cst_marital_status,
+            CASE 
+                WHEN ci.cst_gndr <> 'n/a' THEN ci.cst_gndr
+                WHEN ca.gen <> 'n/a' THEN ca.gen
+                ELSE 'n/a'
+            END AS cst_gndr,
+            COALESCE(lo.cntry, 'n/a') AS cntry,
+            ca.bdate,
+            ci.cst_create_date
+        FROM silver.crm_cust_info ci
+        LEFT JOIN silver.erp_cust_az12 ca ON ci.cst_key = ca.cid
+        LEFT JOIN silver.erp_loc_a101 lo   ON ci.cst_key = lo.cid;
+        SET @end_time = GETDATE();
+        PRINT '   -> Completed in ' + CAST(DATEDIFF(second, @start_time, @end_time) AS VARCHAR) + ' seconds.';
+
+        -- ====================================================================
+        -- 2. Load gold.dim_products (Using Real Columns & Aliases)
+        -- ====================================================================
+        SET @start_time = GETDATE();
+        PRINT '>> Truncating and loading: gold.dim_products';
+        TRUNCATE TABLE gold.dim_products;
+        
+        INSERT INTO gold.dim_products (
+            product_key, prd_id, cat_id, prd_key, prd_nm, prd_cost, prd_line, prd_start_dt, prd_end_dt, cat, subcat, maintenance
+        )
+        SELECT 
+            -- Generating a dynamic integer Surrogate Key
+            ROW_NUMBER() OVER (ORDER BY pi.prd_key, pi.prd_start_dt) AS product_key,
+            pi.prd_id,
+            pi.cat_id,
+            pi.prd_key,
+            pi.prd_nm,
+            pi.prd_cost,
+            pi.prd_line,
+            pi.prd_start_dt,
+            pi.prd_end_dt,
+            COALESCE(px.cat, 'n/a') AS cat,
+            COALESCE(px.subcat, 'n/a') AS subcat,
+            COALESCE(px.maintenance, 'n/a') AS maintenance
+        FROM silver.crm_prd_info pi
+        LEFT JOIN silver.erp_px_cat_g1v2 px ON pi.cat_id = px.id;
+        SET @end_time = GETDATE();
+        PRINT '   -> Completed in ' + CAST(DATEDIFF(second, @start_time, @end_time) AS VARCHAR) + ' seconds.';
+
+        -- ====================================================================
+        -- 3. Load gold.fact_sales (Mapping via Dimension Surrogate Keys)
+        -- ====================================================================
+        SET @start_time = GETDATE();
+        PRINT '>> Truncating and loading: gold.fact_sales';
+        TRUNCATE TABLE gold.fact_sales;
+        
+        INSERT INTO gold.fact_sales (
+            sls_ord_num, customer_key, product_key, sls_order_dt, sls_ship_dt, sls_due_dt, sls_sales, sls_quantity, sls_price
+        )
+        SELECT 
+            sd.sls_ord_num,
+            -- Joins mapping raw operational IDs to new integer Surrogate Keys
+            COALESCE(dc.customer_key, -1) AS customer_key,
+            COALESCE(dp.product_key, -1) AS product_key,
+            sd.sls_order_dt,
+            sd.sls_ship_dt,
+            sd.sls_due_dt,
+            sd.sls_sales,
+            sd.sls_quantity,
+            sd.sls_price
+        FROM silver.crm_sales_details sd
+        -- JOIN to acquire customer surrogate key using the business key links
+        LEFT JOIN gold.dim_customers dc 
+            ON sd.sls_cust_id = dc.cst_id
+        -- JOIN to acquire product surrogate key handling date history logic (SCD Type 2 mapping)
+        LEFT JOIN gold.dim_products dp  
+            ON sd.sls_prd_key = dp.prd_key
+            AND (sd.sls_order_dt >= dp.prd_start_dt OR dp.prd_start_dt IS NULL)
+            AND (sd.sls_order_dt <= dp.prd_end_dt OR dp.prd_end_dt IS NULL);
+            
+        SET @end_time = GETDATE();
+        PRINT '   -> Completed in ' + CAST(DATEDIFF(second, @start_time, @end_time) AS VARCHAR) + ' seconds.';
+
+        -- ==========================================
+        -- Final Summary Execution Log
+        -- ==========================================
+        SET @batch_end = GETDATE();
+        PRINT '==================================================';
+        PRINT 'SUCCESS: Gold Analytical Model Loaded with Surrogate Keys!';
+        PRINT 'Total Batch Execution Time: ' + CAST(DATEDIFF(second, @batch_start, @batch_end) AS VARCHAR) + ' seconds.';
+        PRINT '==================================================';
+
+    END TRY
+    BEGIN CATCH
+        PRINT '==================================================';
+        PRINT 'FATAL ERROR OCCURRED IN GOLD DIMENSIONAL PIPELINE!';
+        PRINT 'Error Message: ' + ERROR_MESSAGE();
+        PRINT '==================================================';
+    END CATCH
+END;
+GO
