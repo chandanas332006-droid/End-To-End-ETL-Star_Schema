@@ -1,0 +1,54 @@
+-- ====================================================================
+-- View 1: Customer View Layer
+-- ====================================================================
+CREATE OR ALTER VIEW gold.vw_dim_customers AS
+SELECT 
+    customer_key, -- Surrogate Key for BI join mapping
+    cst_id,
+    cst_key,
+    cst_firstname,
+    cst_lastname,
+    cst_marital_status,
+    cst_gndr,
+    cntry,
+    bdate,
+    cst_create_date
+FROM gold.dim_customers;
+GO
+
+-- ====================================================================
+-- View 2: Products View Layer
+-- ====================================================================
+CREATE OR ALTER VIEW gold.vw_dim_products AS
+SELECT 
+    product_key, -- Surrogate Key for BI join mapping
+    prd_id,
+    cat_id,
+    prd_key,
+    prd_nm,
+    prd_cost,
+    prd_line,
+    prd_start_dt,
+    prd_end_dt,
+    cat,
+    subcat,
+    maintenance
+FROM gold.dim_products;
+GO
+
+-- ====================================================================
+-- View 3: Sales Fact View Layer
+-- ====================================================================
+CREATE OR ALTER VIEW gold.vw_fact_sales AS
+SELECT 
+    sls_ord_num,
+    customer_key, -- Links directly to gold.vw_dim_customers.customer_key
+    product_key,  -- Links directly to gold.vw_dim_products.product_key
+    sls_order_dt,
+    sls_ship_dt,
+    sls_due_dt,
+    sls_sales,
+    sls_quantity,
+    sls_price
+FROM gold.fact_sales;
+GO
