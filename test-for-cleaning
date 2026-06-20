@@ -1,0 +1,62 @@
+-- ====================================================================
+-- TEST 1: DUPLICATE DETECTION IN DIMENSIONS
+-- Description: Ensures business keys and generated Surrogate Keys are strictly unique.
+-- ====================================================================
+PRINT '==================================================';
+PRINT 'RUNNING TEST 1: Primary Key / Surrogate Key Duplicates';
+PRINT '==================================================';
+
+-- Check for duplicate customers
+SELECT 'Customer Dimension' AS Table_Name, 'customer_key' AS Column_Tested, COUNT(customer_key) - COUNT(DISTINCT customer_key) AS Duplicate_Count FROM gold.vw_dim_customers
+UNION ALL
+SELECT 'Customer Dimension' AS Table_Name, 'cst_id (Natural Key)' AS Column_Tested, COUNT(cst_id) - COUNT(DISTINCT cst_id) AS Duplicate_Count FROM gold.vw_dim_customers
+UNION ALL
+-- Check for duplicate products (SCD Type 2 handles historical duplicate natural keys, but surrogate key must remain unique)
+SELECT 'Product Dimension' AS Table_Name, 'product_key' AS Column_Tested, COUNT(product_key) - COUNT(DISTINCT product_key) AS Duplicate_Count FROM gold.vw_dim_products;
+
+-- ====================================================================
+-- TEST 2: FACT LAYER GRANULARITY DUPLICATES
+-- Description: Checks if multiple rows contain identical order line parameters.
+-- ====================================================================
+PRINT '==================================================';
+PRINT 'RUNNING TEST 2: Fact Layer Transaction Duplicate Scan';
+PRINT '==================================================';
+
+SELECT 
+    sls_ord_num, 
+    customer_key, 
+    product_key, 
+    COUNT(*) AS Row_Occurrences
+FROM gold.vw_fact_sales
+GROUP BY sls_ord_num, customer_key, product_key
+HAVING COUNT(*) > 1;
+-- *NOTE: If this returns 0 records, your Fact table granularity is perfectly clean!
+
+-- ====================================================================
+-- TEST 3: DISTINCT VALUE PROFILING & STANDARDIZATION
+-- Description: Profiles distinct values to verify lowercase 'n/a' standardization
+--              and clean category categorizations.
+-- ====================================================================
+PRINT '==================================================';
+PRINT 'RUNNING TEST 3: Distinct Categorical Data Quality Profiling';
+PRINT '==================================================';
+
+PRINT '>> Profiling Distinct Genders...';
+SELECT cst_gndr AS Distinct_Gender, COUNT(*) AS Row_Count 
+FROM gold.vw_dim_customers 
+GROUP BY cst_gndr;
+
+PRINT '>> Profiling Distinct Countries...';
+SELECT cntry AS Distinct_Country, COUNT(*) AS Row_Count 
+FROM gold.vw_dim_customers 
+GROUP BY cntry;
+
+PRINT '>> Profiling Distinct Product Lines...';
+SELECT prd_line AS Distinct_Product_Line, COUNT(*) AS Row_Count 
+FROM gold.vw_dim_products 
+GROUP BY prd_line;
+
+PRINT '>> Profiling Distinct Product Categories...';
+SELECT cat AS Distinct_Category, COUNT(*) AS Row_Count 
+FROM gold.vw_dim_products 
+GROUP BY cat;
