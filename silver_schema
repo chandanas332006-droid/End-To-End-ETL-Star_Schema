@@ -1,84 +1,155 @@
-CREATE OR ALTER PROCEDURE silver.load_silver AS
+CREATE OR ALTER PROCEDURE bronze.load_bronze AS
 BEGIN
     SET NOCOUNT ON;
     
+    /*
+    ===================================================================================
+    PIPELINE DESCRIPTION:
+    This stored procedure orchestrates the complete Bronze Layer (Staging) Ingestion:
+    
+    1. TRUNCATES AND FLOODS: Wipes old staging data to prevent row duplication.
+    2. BULK INGESTION: Uses high-performance BULK INSERT to stream 6 raw CSV files into SQL:
+       - CRM Datasets: 'crm_cust_info', 'crm_prd_info', 'crm_sales_details'
+       - ERP Datasets: 'erp_cust_az12', 'erp_loc_a101', 'erp_px_cat_g1v2'
+    3. PERFORMANCE OPTIMIZATION: Applies TABLOCK to minimize transaction log overhead.
+    4. TIME AUDITING: Captures precise execution durations for each individual table load.
+    5. FAULT TOLERANCE: Uses TRY/CATCH blocks to intercept and report ingestion failures.
+    ===================================================================================
+    */
+
+    DECLARE @start_time DATETIME, @end_time DATETIME;
+    DECLARE @batch_start DATETIME, @batch_end DATETIME;
+    
     BEGIN TRY
+        SET @batch_start = GETDATE();
         PRINT '==================================================';
-        PRINT 'Starting Silver Layer Load (Handling Missing as lowercase n/a)';
+        PRINT 'Starting Master Bronze Layer Load Pipeline';
         PRINT '==================================================';
 
-        -- ====================================================================
-        -- 1. Load silver.crm_cust_info
-        -- ====================================================================
-        PRINT '>> Truncating and loading: silver.crm_cust_info';
-        TRUNCATE TABLE silver.crm_cust_info;
+        -- ==========================================
+        -- 1. Load CRM Customer Info
+        -- ==========================================
+        SET @start_time = GETDATE();
+        PRINT '>> Truncating and loading: bronze.crm_cust_info';
+        TRUNCATE TABLE bronze.crm_cust_info;
         
-        INSERT INTO silver.crm_cust_info (
-            cst_id, cst_key, cst_firstname, cst_lastname, 
-            cst_marital_status, cst_gndr, cst_create_date
-        )
-        SELECT 
-            cst_id,
-            cst_key,
-            -- If blank or NULL, default to lowercase 'n/a'
-            CASE WHEN ISNULL(TRIM(cst_firstname), '') = '' THEN 'n/a' ELSE TRIM(cst_firstname) END AS cst_firstname,
-            CASE WHEN ISNULL(TRIM(cst_lastname), '') = '' THEN 'n/a' ELSE TRIM(cst_lastname) END AS cst_lastname,
-            CASE 
-                WHEN UPPER(TRIM(cst_marital_status)) IN ('M', 'MARRIED') THEN 'Married'
-                WHEN UPPER(TRIM(cst_marital_status)) IN ('S', 'SINGLE') THEN 'Single'
-                ELSE 'n/a' 
-            END AS cst_marital_status,
-            CASE 
-                WHEN UPPER(TRIM(cst_gndr)) IN ('F', 'FEMALE') THEN 'Female'
-                WHEN UPPER(TRIM(cst_gndr)) IN ('M', 'MALE') THEN 'Male'
-                ELSE 'n/a' 
-            END AS cst_gndr,
-            CAST(cst_create_date AS DATE) AS cst_create_date
-        FROM bronze.crm_cust_info;
+        BULK INSERT bronze.crm_cust_info
+        FROM 'C:\your_path\source_crm\cust_info.csv' -- Change to your directory
+        WITH (
+            FIRSTROW = 2,
+            FIELDTERMINATOR = ',',
+            ROWTERMINATOR = '\n',
+            TABLOCK
+        );
+        SET @end_time = GETDATE();
+        PRINT '   -> Completed in ' + CAST(DATEDIFF(second, @start_time, @end_time) AS VARCHAR) + ' seconds.';
 
-        -- ====================================================================
-        -- 2. Load silver.erp_cust_az12
-        -- ====================================================================
-        PRINT '>> Truncating and loading: silver.erp_cust_az12';
-        TRUNCATE TABLE silver.erp_cust_az12;
+        -- ==========================================
+        -- 2. Load CRM Product Info
+        -- ==========================================
+        SET @start_time = GETDATE();
+        PRINT '>> Truncating and loading: bronze.crm_prd_info';
+        TRUNCATE TABLE bronze.crm_prd_info;
         
-        INSERT INTO silver.erp_cust_az12 (cid, bdate, gen)
-        SELECT 
-            cid,
-            CASE 
-                WHEN bdate > GETDATE() THEN NULL 
-                ELSE CAST(bdate AS DATE) 
-            END AS bdate,
-            CASE 
-                WHEN UPPER(TRIM(gen)) IN ('F', 'FEMALE') THEN 'Female'
-                WHEN UPPER(TRIM(gen)) IN ('M', 'MALE') THEN 'Male'
-                ELSE 'n/a' 
-            END AS gen
-        FROM bronze.erp_cust_az12;
+        BULK INSERT bronze.crm_prd_info
+        FROM 'C:\your_path\source_crm\prd_info.csv' -- Change to your directory
+        WITH (
+            FIRSTROW = 2,
+            FIELDTERMINATOR = ',',
+            ROWTERMINATOR = '\n',
+            TABLOCK
+        );
+        SET @end_time = GETDATE();
+        PRINT '   -> Completed in ' + CAST(DATEDIFF(second, @start_time, @end_time) AS VARCHAR) + ' seconds.';
 
-        -- ====================================================================
-        -- 3. Load silver.erp_loc_a101
-        -- ====================================================================
-        PRINT '>> Truncating and loading: silver.erp_loc_a101';
-        TRUNCATE TABLE silver.erp_loc_a101;
+        -- ==========================================
+        -- 3. Load CRM Sales Details
+        -- ==========================================
+        SET @start_time = GETDATE();
+        PRINT '>> Truncating and loading: bronze.crm_sales_details';
+        TRUNCATE TABLE bronze.crm_sales_details;
         
-        INSERT INTO silver.erp_loc_a101 (cid, cntry)
-        SELECT 
-            cid,
-            -- If country is blank or NULL, default to lowercase 'n/a'
-            CASE 
-                WHEN ISNULL(TRIM(cntry), '') = '' THEN 'n/a'
-                ELSE UPPER(TRIM(cntry)) -- Keeps country codes like 'USA' uppercase, but missing values as 'n/a'
-            END AS cntry
-        FROM bronze.erp_loc_a101;
+        BULK INSERT bronze.crm_sales_details
+        FROM 'C:\your_path\source_crm\sales_details.csv' -- Change to your directory
+        WITH (
+            FIRSTROW = 2,
+            FIELDTERMINATOR = ',',
+            ROWTERMINATOR = '\n',
+            TABLOCK
+        );
+        SET @end_time = GETDATE();
+        PRINT '   -> Completed in ' + CAST(DATEDIFF(second, @start_time, @end_time) AS VARCHAR) + ' seconds.';
 
+        -- ==========================================
+        -- 4. Load ERP Customer AZ12
+        -- ==========================================
+        SET @start_time = GETDATE();
+        PRINT '>> Truncating and loading: bronze.erp_cust_az12';
+        TRUNCATE TABLE bronze.erp_cust_az12;
+        
+        BULK INSERT bronze.erp_cust_az12
+        FROM 'C:\your_path\source_erp\cust_az12.csv' -- Change to your directory
+        WITH (
+            FIRSTROW = 2,
+            FIELDTERMINATOR = ',',
+            ROWTERMINATOR = '\n',
+            TABLOCK
+        );
+        SET @end_time = GETDATE();
+        PRINT '   -> Completed in ' + CAST(DATEDIFF(second, @start_time, @end_time) AS VARCHAR) + ' seconds.';
+
+        -- ==========================================
+        -- 5. Load ERP Location A101
+        -- ==========================================
+        SET @start_time = GETDATE();
+        PRINT '>> Truncating and loading: bronze.erp_loc_a101';
+        TRUNCATE TABLE bronze.erp_loc_a101;
+        
+        BULK INSERT bronze.erp_loc_a101
+        FROM 'C:\your_path\source_erp\loc_a101.csv' -- Change to your directory
+        WITH (
+            FIRSTROW = 2,
+            FIELDTERMINATOR = ',',
+            ROWTERMINATOR = '\n',
+            TABLOCK
+        );
+        SET @end_time = GETDATE();
+        PRINT '   -> Completed in ' + CAST(DATEDIFF(second, @start_time, @end_time) AS VARCHAR) + ' seconds.';
+
+        -- ==========================================
+        -- 6. Load ERP Product Category Mapping
+        -- ==========================================
+        SET @start_time = GETDATE();
+        PRINT '>> Truncating and loading: bronze.erp_px_cat_g1v2';
+        TRUNCATE TABLE bronze.erp_px_cat_g1v2;
+        
+        BULK INSERT bronze.erp_px_cat_g1v2
+        FROM 'C:\your_path\source_erp\px_cat_g1v2.csv' -- Change to your directory
+        WITH (
+            FIRSTROW = 2,
+            FIELDTERMINATOR = ',',
+            ROWTERMINATOR = '\n',
+            TABLOCK
+        );
+        SET @end_time = GETDATE();
+        PRINT '   -> Completed in ' + CAST(DATEDIFF(second, @start_time, @end_time) AS VARCHAR) + ' seconds.';
+
+        -- ==========================================
+        -- Final Summary Execution Log
+        -- ==========================================
+        SET @batch_end = GETDATE();
         PRINT '==================================================';
-        PRINT 'Silver Layer Load Successful!';
+        PRINT 'SUCCESS: All 6 Bronze Tables Loaded!';
+        PRINT 'Total Batch Execution Time: ' + CAST(DATEDIFF(second, @batch_start, @batch_end) AS VARCHAR) + ' seconds.';
         PRINT '==================================================';
 
     END TRY
     BEGIN CATCH
-        PRINT 'ERROR OCCURRED: ' + ERROR_MESSAGE();
+        PRINT '==================================================';
+        PRINT 'FATAL ERROR OCCURRED IN BRONZE PIPELINE!';
+        PRINT 'Error Message: ' + ERROR_MESSAGE();
+        PRINT 'Error Severity: ' + CAST(ERROR_SEVERITY() AS VARCHAR);
+        PRINT '==================================================';
     END CATCH
 END;
 GO
